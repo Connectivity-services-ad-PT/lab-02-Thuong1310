@@ -1,9 +1,9 @@
 # Phân tích yêu cầu — vai Provider
 
-- Cặp đàm phán:
+- Cặp đàm phán: pair-07-camera-analytics-async
 - Product: A / B
-- Provider service:
-- Consumer service:
+- Provider service: Camera Stream
+- Consumer service: Analytics
 - Người viết:
 - Ngày:
 
@@ -13,8 +13,9 @@
 
 | Resource | Mô tả | Thuộc tính bắt buộc | Thuộc tính tùy chọn |
 |---|---|---|---|
-| `<Resource 1>` |  |  |  |
-| `<Resource 2>` |  |  |  |
+| `CameraMotionEvent` | Sự kiện detect motion/abnormal activity | cameraId, timestamp, confidence, detectionId | region, imageRef, severity |
+| `CameraFrameAnalyzedEvent` | Sự kiện analysis frame result (object detection) | cameraId, timestamp, analysisResult, detectionId | imageRef, metadata, topKObjects |
+| `CameraStatusEvent` | Sự kiện status camera (online/offline/error) | cameraId, status, timestamp | signalStrength, lastFrame, errorCode |
 
 ---
 
@@ -22,8 +23,9 @@
 
 | Method | Path | Mục đích | Consumer gọi khi nào? |
 |---|---|---|---|
-| POST | `/...` |  |  |
-| GET | `/.../{id}` |  |  |
+| Event | `camera.motion.detected` | Camera Stream phát event detect motion | Analytics consume để aggregate statistics, alert |
+| Event | `camera.frame.analyzed` | Camera Stream phát event frame analyzed | Analytics store kết quả, build dashboard |
+| Event | `camera.status.changed` | Camera Stream phát event status thay đổi | Analytics track camera health, alert offline |
 
 ---
 
@@ -33,12 +35,11 @@ Tối thiểu 5 case.
 
 | Status | Tình huống | Response body dự kiến |
 |---:|---|---|
-| 400 | Payload sai định dạng | `Problem` |
-| 401 | Thiếu Bearer token | `Problem` |
-| 403 | Token hợp lệ nhưng không có quyền | `Problem` |
-| 404 | Resource không tồn tại | `Problem` |
-| 409 | Xung đột nghiệp vụ | `Problem` |
-| 422 | Dữ liệu đúng JSON nhưng vi phạm nghiệp vụ | `Problem` |
+| Message schema invalid | Event payload missing required field hay type sai | Dead-letter queue entry, log error detail |
+| Missing cameraId | Event không có cameraId | Dead-letter queue, log "mandatory field missing" |
+| Invalid confidence | Confidence > 1.0 hoặc < 0 | Dead-letter queue, log validation error |
+| Duplicate detectionId | Cùng cameraId+detectionId gửi 2 lần | Analytics idempotent, no duplicate processing |
+| Queue broker offline | Camera Stream không publish được | Retry logic, circuit breaker, alert ops |
 
 ---
 
@@ -46,17 +47,25 @@ Tối thiểu 5 case.
 
 Ghi rõ những điểm user story chưa nói nhưng Provider cần giả định.
 
-- Giả định 1:
-- Giả định 2:
-- Giả định 3:
+- 100+ camera, each capture 30 fps (high volume).
+- Camera Stream publish event qua message broker (Kafka).
+- Motion confidence: 0.0-1.0 range.
+- Frame analysis result: { "objects": [{"type": "person", "count": 2}, {"type": "car", "count": 1}] }.
+- Camera status: ONLINE, OFFLINE, ERROR, MAINTENANCE.
+- Timestamp luôn ISO 8601 UTC.
+- Motion event: emit khi confidence > threshold (vd: 0.7).
+- Frame analyzed event: emit mỗi N frame (vd: mỗi 30 frame = 1 second).
+- Status event: emit khi status thay đổi hoặc timeout (vd: offline 5 min → event).
 
 ---
 
 ## 5. Câu hỏi cho Consumer
 
-1. 
-2. 
-3. 
+1. Analytics có cần full image data hay chỉ imageRef (URL) đủ k ?
+2. Frame analyzed event có cần top-K object hay tất cả detected objects?
+3. Analytics cần realtime alert khi motion detected hay batch report?
+4. Confidence threshold nào Analytics sẽ trigger alert? (vd: > 0.8)
+5. Analytics có deduplicate hoặc merge event từ cùng camera không? 
 
 ---
 
@@ -64,5 +73,8 @@ Ghi rõ những điểm user story chưa nói nhưng Provider cần giả địn
 
 | Rủi ro | Tác động | Đề xuất xử lý |
 |---|---|---|
-| Tên field không thống nhất | Consumer parse lỗi | Chốt naming trong `openapi.yaml` |
-| Payload lớn | Timeout/mock lỗi | Thống nhất content-type và size limit |
+| Image include full frame base64 → oversized event | Queue lag, broker memory issue | Use imageRef (URL) only, not full image |
+| Confidence score outside 0-1 range | Analytics filter/threshold sai | Validate, enforce range, dead-letter invalid |
+| Status enum khác định nghĩa | Analytics alert logic sai | Chốt cụ thể: ONLINE, OFFLINE, ERROR, MAINTENANCE |
+| High-volume frame event (3000 event/sec) → queue congestion | Analytics lag, miss realtime detection | Partition by cameraId, sample/throttle frames |
+| Duplicate detectionId do network retry | Analytics count motion/object inflated | Idempotent by (cameraId + detectionId + timestamp) |
