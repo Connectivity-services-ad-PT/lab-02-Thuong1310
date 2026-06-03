@@ -32,7 +32,7 @@ Bài làm đạt yêu cầu khi:
 
 - `openapi.yaml` dùng **OpenAPI 3.1.0**.
 - Có tối thiểu 4 path phù hợp user story của cặp.
-- Có schema đặt trong `components/schemas`, dùng `$ref` thay vì inline schema dài.
+
 - Có ít nhất một ví dụ `oneOf` + `discriminator`.
 - Có ít nhất một trường dùng union type với `null`, ví dụ `type: [string, "null"]`.
 - Response lỗi 4xx/5xx dùng `Problem Details`.
