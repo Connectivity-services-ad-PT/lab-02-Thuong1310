@@ -1,46 +1,34 @@
-#!/usr/bin/env bash
-# ============================================================
-# test_mock_with_curl.sh
-# Test 5 requests mau - Smart Campus Core Business API (A6)
-# ============================================================
-set -e
+$ErrorActionPreference = "Stop"
 
-BASE="http://localhost:4010"
-TOKEN="Bearer lab-token"
+$BaseUrl = if ($env:BASE_URL) { $env:BASE_URL } else { "http://localhost:4010" }
+$AuthHeader = "Authorization: Bearer test-token"
 
-echo "[Lab02] Testing Prism mock server at $BASE"
-echo "============================================================"
+Write-Host "[Lab02] Testing Prism mock server at $BaseUrl"
+Write-Host ""
 
-echo ""
-echo "[1/5] Happy path: GET /health"
-curl -s -i "$BASE/health"
-echo -e "\n---"
+Write-Host "[1/5] Happy path: GET /health"
+curl.exe -i "$BaseUrl/health"
+Write-Host "`n---"
 
-echo ""
-echo "[2/5] Happy path: GET /access/logs/recent"
-curl -s -i -H "Authorization: $TOKEN" "$BASE/access/logs/recent"
-echo -e "\n---"
+Write-Host "[2/5] Happy path: GET /alerts/recent"
+curl.exe -i "$BaseUrl/alerts/recent" -H $AuthHeader
+Write-Host "`n---"
 
-echo ""
-echo "[3/5] Happy path: POST /access/check"
-curl -s -i -X POST \
-  -H "Authorization: $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"requestId":"0196fb3d-4ad7-7d1e-9f49-5d5148d2cafe","cardId":"RFID88776655","gateId":"GATE-01","direction":"IN","timestamp":"2026-06-01T10:00:00Z"}' \
-  "$BASE/access/check"
-echo -e "\n---"
+Write-Host "[3/5] Happy path: POST /alerts"
+$payload = '{
+  "sourceService": "core-business",
+  "alertType": "UNAUTHORIZED_ACCESS",
+  "severity": "HIGH",
+  "message": "Phat hien truy cap trai phep tai cong chinh",
+  "relatedEventId": "0196fb3d-4ad7-7d1e-9f49-5d5148d2babc"
+}'
+curl.exe -i -X POST "$BaseUrl/alerts" -H $AuthHeader -H "Content-Type: application/json" -d $payload
+Write-Host "`n---"
 
-echo ""
-echo "[4/5] Happy path: GET /cards/RFID88776655"
-curl -s -i -H "Authorization: $TOKEN" "$BASE/cards/RFID88776655"
-echo -e "\n---"
+Write-Host "[4/5] Error case: GET /alerts/recent without token"
+curl.exe -i "$BaseUrl/alerts/recent"
+Write-Host "`n---"
 
-echo ""
-echo "[5/5] Error case: GET /vision/detect/00000000-0000-0000-0000-000000000000 (not found)"
-curl -s -i -H "Authorization: $TOKEN" \
-  "$BASE/vision/detect/00000000-0000-0000-0000-000000000000"
-echo -e "\n---"
-
-echo ""
-echo "============================================================"
-echo "[Lab02] Done."
+Write-Host "[5/5] Error case: POST /alerts invalid payload"
+curl.exe -i -X POST "$BaseUrl/alerts" -H $AuthHeader -H "Content-Type: application/json" -d '{ "alertType": 12345 }'
+Write-Host ""

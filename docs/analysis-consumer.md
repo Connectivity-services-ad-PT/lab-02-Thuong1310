@@ -1,21 +1,19 @@
-le n# Phân tích yêu cầu — vai Consumer
+# Phân tích yêu cầu — vai Consumer
 
-- Cặp đàm phán: pair-07-camera-analytics-async
-- Product: A / B
-- Consumer service: Analytics
-- Provider service: Camera Stream
-- Người viết:
-- Ngày:
+- Cặp đàm phán: Pair 02 — Core Business (A6/B6) ↔ AI Vision (A4/B4)
+- Product: A
+- Consumer service: Core Business (A6) — xử lý nghiệp vụ trung tâm / Rule Engine
+- Provider service: AI Vision (A4) — phân tích hình ảnh / detect
+- Người viết: Nguyễn Văn Hưởng
+- Ngày: 27-05-2026
 
----
-
+--
 ## 1. Resource Consumer cần nhận/gửi
 
 | Resource | Consumer dùng để làm gì? | Field bắt buộc với Consumer | Field có thể tùy chọn |
 |---|---|---|---|
-| `CameraMotionEvent` | Aggregate motion detection statistics | cameraId, timestamp, confidence, region | detectionId, imageRef |
-| `CameraFrameAnalyzedEvent` | Track frame analysis result (object detection, etc) | cameraId, timestamp, analysisResult, detectionId | imageRef, metadata |
-| `CameraStatusEvent` | Monitor camera health (online/offline/error) | cameraId, status, timestamp | signalStrength, lastFrame |
+| `VisionDetectRequest` | Gửi yêu cầu AI Vision phân tích ảnh (nhận diện người lạ/biển số/đột nhập) để Core ra quyết định nghiệp vụ | `requestId`, `cameraId`, `capturedAt`, **một trong** (`imageUrl` hoặc `imageBase64`) | `locationId`, `correlationId`, `priority`, `metadata` |
+| `VisionDetectResult` | Nhận kết quả detect để Core tạo alert, ghi log, hoặc điều khiển Access Gate | `requestId`, `status`, `detectedAt`, `detections[]` (mỗi detection có `type`, `confidence`) | `faces[]/plates[]`, `boundingBoxes[]`, `processingTimeMs`, `rawModelVersion`, `notes` |
 
 ---
 
@@ -23,45 +21,43 @@ le n# Phân tích yêu cầu — vai Consumer
 
 | Method | Path | Lúc nào gọi? | Kỳ vọng response |
 |---|---|---|---|
-| Event | `camera.motion.detected` | Camera detect motion (abnormal activity) | Analytics consume & aggregate statistics |
-| Event | `camera.frame.analyzed` | Camera analysis frame (object count, types) | Analytics store result, create dashboard |
-| Event | `camera.status.changed` | Camera status change (online/offline/error) | Analytics update camera health dashboard |
+| POST | `/vision/detect` | Khi Core cần phân tích 1 ảnh/frame (theo event motion hoặc theo nghiệp vụ) | `201` trả `VisionDetectResult`; lỗi trả `Problem` |
+| GET | `/vision/detect/{requestId}` | Khi Core muốn lấy lại kết quả theo requestId (trường hợp xử lý async nội bộ phía AI Vision) | `200` trả `VisionDetectResult`, `404` nếu không có |
+| GET | `/vision/models` | Khi Core cần biết model/version đang chạy để audit hoặc debug | `200` trả danh sách model + version |
+| GET | `/health` | Khi Core kiểm tra service AI Vision còn hoạt động để quyết định fallback | `200` trả HealthStatus |
+
+> Ghi chú đàm phán: nếu AI Vision xử lý lâu, có thể trả `202 Accepted` ở POST và Core dùng GET theo `requestId` để poll.
 
 ---
 
 ## 3. Error case Consumer cần xử lý
 
-Tối thiểu 5 case.
-
 | Status | Consumer hiểu là gì? | Consumer sẽ xử lý thế nào? |
 |---:|---|---|
-| Sai schema event | Event payload không match schema (missing field, type wrong) | Log error, push to dead-letter queue |
-| Thiếu cameraId | Không biết event từ camera nào | Log error, skip event, push to dead-letter |
-| Invalid confidence | Confidence value không phải 0-1 hoặc missing | Log warning, skip hoặc use default value |
-| Duplicate detectionId | Cùng detectionId nhận 2 lần | Idempotent check, skip nếu đã process |
-| Queue timeout / broker offline | Analytics không kết nối queue | Retry, dead-letter queue, alert ops |
+| 400 | Payload sai schema (thiếu imageUrl/base64, sai format) | Log lỗi, không retry, fix payload |
+| 401 | Thiếu/expired token | Refresh token / cấu hình lại JWT |
+| 403 | Không đủ quyền gọi detect | Báo lỗi quyền, kiểm tra scope/role |
+| 404 | Không tìm thấy requestId khi GET | Dừng poll, đánh dấu job failed |
+| 409 | Trùng requestId (idempotency) | Không tạo job mới; coi idempotent hoặc đổi requestId |
+| 422 | Ảnh hợp lệ JSON nhưng không xử lý được (vd ảnh quá lớn/không đúng định dạng) | Hiển thị reason cụ thể, fallback sang phương án khác |
+| 500 | Lỗi nội bộ AI Vision | Retry có backoff (giới hạn), hoặc fallback rule |
 
 ---
 
 ## 4. Giả định bổ sung
 
-- Camera event publish qua message broker (Kafka recommended).
-- Camera status: ONLINE, OFFLINE, ERROR, MAINTENANCE.
-- Motion confidence: 0.0-1.0 (0 = no motion, 1 = certain motion).
-- Frame analysis result: object type + count (vd: person=2, car=1, bag=0).
-- Timestamp luôn ISO 8601 UTC.
-- Analytics process event realtime hoặc batch per minute.
-- Dead-letter queue để review event lỗi.
+- Auth dùng Bearer JWT (`Authorization: Bearer <token>`).
+- `requestId` là UUID và unique (dùng làm idempotency key nếu thống nhất).
+- `capturedAt/detectedAt` dùng `date-time` ISO-8601 UTC.
+- Nếu dùng `imageBase64`, cần chốt giới hạn kích thước (vd <= 2MB) và content-type.
 
 ---
 
 ## 5. Câu hỏi cho Provider
 
-1. Có gửi ảnh thật vào event không hay chỉ imageRef (URL)?
-2. Motion event cần confidence score không? (để filter false positive)
-3. Camera offline bao lâu thì sinh status.changed event? (immediate hay timeout 5min?)
-4. Frame analyzed event có top-k object không? (vd: top 5 largest objects)
-5. Analytics có cần realtime alert khi motion/object detected hay batch report? 
+1. POST `/vision/detect` trả `201` ngay hay `202` + poll bằng GET? SLA xử lý dự kiến bao lâu?
+2. Chốt format ảnh: ưu tiên `imageUrl` hay `imageBase64`? Có giới hạn size/định dạng (jpg/png) không?
+3. `detections[].type` có enum cố định không (UNKNOWN_PERSON/INTRUSION/PLATE/...) và `confidence` range 0..1 hay 0..100?
 
 ---
 
@@ -69,8 +65,6 @@ Tối thiểu 5 case.
 
 | Rủi ro | Tác động | Đề xuất xử lý |
 |---|---|---|
-| Image reference format khác (URL vs path vs base64) | Analytics không fetch image | Chốt format, provide base URL nếu relative |
-| Confidence score missing hoặc > 1.0 | Analytics filter sai | Enforce 0.0-1.0 range, validate, dead-letter |
-| Camera status enum khác (ON/OFF vs ONLINE/OFFLINE) | Analytics alert sai | Chốt enum: ONLINE, OFFLINE, ERROR, MAINTENANCE |
-| High-volume frame events (30fps × 100 camera) → queue lag | Analytics late, miss realtime | Partition by cameraId, sample/skip frames |
-| Duplicate detectionId do camera retry | Analytics count inflated | Idempotent by (cameraId + detectionId + timestamp) |
+| Không thống nhất format ảnh | Core gửi không xử lý được | Chốt `imageUrl`/`imageBase64`, size limit, mime types |
+| Model/labels thay đổi | Core mapping sai loại detection | Chốt enum/type + versioning, có `/vision/models` |
+| Xử lý lâu/timeout | Core bị treo flow nghiệp vụ | Thống nhất 202 + polling hoặc timeout + fallback |
